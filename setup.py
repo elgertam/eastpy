@@ -24,7 +24,7 @@ test_requirements = [
 
 setup(
     name='eastpy',
-    version='0.1.0',
+    version='0.1.1',
     description="East-oriented Python examples, based on James Ladd's \"East-oriented\" technique.",
     long_description=readme + '\n\n' + history,
     author="Andrew M Elgert",
