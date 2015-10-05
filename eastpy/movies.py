@@ -5,6 +5,7 @@ import sys
 import json
 
 import attr
+from attr import asdict
 
 from typing import Callable, IO, cast
 
@@ -18,17 +19,7 @@ class MovieValue(object):
     director = attr.ib(default='')
 
 
-class MovieFormatter(object):
-    __metaclass__ = abc.ABCMeta
-
-    @abc.abstractmethod
-    def format_and_print_on(self, movie: MovieValue, stream: IO[str]) -> 'MovieFormatter':
-        """Format :movie and print onto :streamwriter"""
-
-
-class Movie(object):
-    __metaclass__ = abc.ABCMeta
-
+class Movie(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def if_directed_by_do(self, director: str, action: Callable[['Movie'], None]) -> 'Movie':
         """Perform :action if movie directed by :director"""
@@ -37,63 +28,114 @@ class Movie(object):
     def if_title_do(self, title: str, action: Callable[['Movie'], None]) -> 'Movie':
         """Perform :action if movie title is :title"""
 
+    def print_on_with_format(self, stream: IO[str], formatter: 'MovieFormatter') -> 'Movie':
+        """
+        Print movie onto :stream using :format
+
+        Deprecated in favor of format_with(formatter).print_on(stream)
+        """
+        return self.format_with(formatter).print_on(stream)
+
     @abc.abstractmethod
-    def print_on_with_format(self, stream: IO[str], formatter: MovieFormatter) -> 'Movie':
-        """Print movie onto :stream using :format"""
+    def format_with(self, formatter: 'MovieFormatter'):
+        """Format movie with :formatter"""
+
+    @abc.abstractmethod
+    def print_on(self, stream: IO[str]):
+        """Print movie onto :stream"""
+
+    # TODO: Smell. Refactor to have "MoviePrinter" take care of formatting + printing using factories
+    @abc.abstractmethod
+    def set_format(self, formatted_movie: str) -> 'Movie':
+        """Tell movie its formatted output"""
 
 
-class MovieFinder(object):
-    __metaclass__ = abc.ABCMeta
+class MovieFormatter(metaclass=abc.ABCMeta):
+    @abc.abstractmethod
+    def format_and_print_on(self, movie: MovieValue, stream: IO[str]) -> 'MovieFormatter':
+        """
+        Format :movie and print onto :stream
 
+        Deprecated: don't use
+        """
+
+    @abc.abstractmethod
+    def format(self, movie: Movie, title: str, director: str) -> 'MovieFormatter':
+        """Format :movie and print onto :stream"""
+
+
+class MovieFinder(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def find_all_and_apply(self, action: Callable[[Movie], None]) -> 'MovieFinder':
         """Find all movies and apply :action"""
 
 
-class MovieLister(object):
-    __metaclass__ = abc.ABCMeta
-
+class MovieLister(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def apply_to_movies_directed_by(self, action: Callable[[Movie], None], director: str) -> 'MovieLister':
         """Execute :action on movies directed by by :director"""
 
 
-class MoviesClient(object):
-    __metaclass__ = abc.ABCMeta
-
+class MoviesClient(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def append(self, movie: Movie) -> 'MoviesClient':
         """Append :movie onto stream using :formatter"""
 
 
 class SimpleStringMovieFormatter(MovieFormatter):
-    def format_and_print_on(self, movie: MovieValue, stream: IO[str]):
-        stream.write('Movie (title: {}, director: {})\n'.format(movie.title, movie.director))
+    # TODO: formatter should get data at create time without leaking it out; refactor to use __init__ and a factory
+    def format(self, movie: Movie, title: str, director: str) -> 'MovieFormatter':
+        movie.set_format(self._create_formatted_movie(title, director))
         return self
+
+    def format_and_print_on(self, movie: MovieValue, stream: IO[str]):
+        stream.write(self._create_formatted_movie(movie.title, movie.director))
+        return self
+
+    def _create_formatted_movie(self, title: str, director: str) -> str:
+        return 'Movie (title: {}, director: {})\n'.format(title, director)
 
 
 class JSONMovieFormatter(MovieFormatter):
+    # TODO: formatter should get data at create time without leaking it out; refactor to use __init__ and a factory
+    def format(self, movie: Movie, title: str, director: str) -> 'MovieFormatter':
+        movie.set_format(self._create_formatted_movie(title, director))
+        return self
+
     def format_and_print_on(self, movie: MovieValue, stream: IO[str]):
-        stream.write(json.dumps(attr.asdict(movie)))
+        stream.write(self._create_formatted_movie(**asdict(movie)))
         stream.write('\n')
         return self
 
+    def _create_formatted_movie(self, title: str, director: str) -> str:
+        return json.dumps({'title': title, 'director': director}) + '\n'
+
 
 class JSONArrayMovieFormatter(MovieFormatter):
+    # TODO: formatter should get data at create time without leaking it out; refactor to use __init__ and a factory
     def __init__(self):
         self._array = []
         self._stream = None
 
+    def format(self, movie: Movie, title: str, director: str) -> 'MovieFormatter':
+        self._array.append({'title': title, 'director': director})
+        movie.set_format(self._create_formatted_movie())
+        return self
+
     def format_and_print_on(self, movie: MovieValue, stream: IO[str]):
         if self._stream is None:
             self._stream = stream
-        self._array.append(attr.asdict(movie))
-        stream.write(json.dumps(self._array))
-        stream.write('\n')
+        self._array.append(asdict(movie))
+
+        stream.write(self._create_formatted_movie())
+        return self
 
     def collect_and_print(self):
         if len(self._array) > 0 and self._stream is not None:
-            self._stream.write(json.dumps(self._array))
+            self._stream.write(self._create_formatted_movie())
+
+    def _create_formatted_movie(self) -> str:
+        return json.dumps(self._array) + '\n'
 
 
 class ExampleMovieLister(MovieLister):
@@ -109,6 +151,7 @@ class ExampleMovie(Movie):
     def __init__(self, title: str, director: str):
         self._title = title
         self._director = director
+        self._formatted_movie = ''
 
     def if_directed_by_do(self, director: str, action: Callable[[Movie], None]):
         if self._director == director:
@@ -120,10 +163,16 @@ class ExampleMovie(Movie):
             action(self)
         return self
 
-    def print_on_with_format(self, stream: IO[str], formatter: MovieFormatter):
-        movie = MovieValue(title=self._title, director=self._director)
-        formatter.format_and_print_on(movie, stream)
+    def set_format(self, formatted_movie: str) -> 'Movie':
+        self._formatted_movie = formatted_movie
         return self
+
+    def format_with(self, formatter: MovieFormatter):
+        formatter.format(self, title=self._title, director=self._director)
+        return self
+
+    def print_on(self, stream: IO[str]):
+        stream.write(self._formatted_movie)
 
 
 class ExampleMovieFinder(MovieFinder):
@@ -147,7 +196,7 @@ class ExampleMoviesClientStreamAdaptor(MoviesClient):
         self._formatter = formatter
 
     def append(self, movie: Movie):
-        movie.print_on_with_format(self._stream, self._formatter)
+        movie.format_with(self._formatter).print_on(self._stream)
 
 
 class ExampleMoviesClientFileAdaptor(MoviesClient):
@@ -158,7 +207,7 @@ class ExampleMoviesClientFileAdaptor(MoviesClient):
     def append(self, movie: Movie):
         with cast(IO[str], open(self._file_path, 'a')) as f:
             f.truncate()
-            movie.print_on_with_format(f, self._formatter)
+            movie.format_with(self._formatter).print_on(f)
 
 
 if __name__ == '__main__':
