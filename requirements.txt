@@ -1,2 +1,2 @@
 attrs==17.2.0
-typing==3.5.0
+typing==3.6.2
